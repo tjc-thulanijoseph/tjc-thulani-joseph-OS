@@ -5,6 +5,12 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
+ * TJC OS Design System
+ * Premium dark theme — obsidian black, gold accent, generous spacing.
+ * Fonts: Poppins (headings), Inter (body), Space Grotesk (numerals).
+ */
+
+/*
  * Design system definition.
  *
  * The @theme inline block maps CSS custom properties to Tailwind utility
