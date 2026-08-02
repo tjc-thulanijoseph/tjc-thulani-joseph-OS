@@ -43,8 +43,8 @@ export function ModuleWorkspace({ module }: { module: DashboardModule }) {
         <CardContent>
           {!resource ? (
             <p className="text-sm leading-relaxed text-muted-foreground">
-              This module is wired into the sidebar, routing and permission model. Its provider adapter
-              plugs into <code className="text-gold">src/services/providers</code> when activated.
+              This module is wired into the sidebar, routing and permission model. It has no data table of
+              its own yet.
             </p>
           ) : query.isPending ? (
             <div className="space-y-3">
@@ -54,8 +54,28 @@ export function ModuleWorkspace({ module }: { module: DashboardModule }) {
             </div>
           ) : query.data?.error ? (
             <p className="text-sm leading-relaxed text-muted-foreground">{query.data.error.message}</p>
+          ) : (query.data?.data.total ?? 0) === 0 ? (
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              No records yet. Anything you add here appears instantly on the public site.
+            </p>
           ) : (
-            <p className="numeric text-sm text-muted-foreground">{query.data?.data.total ?? 0} records</p>
+            <div>
+              <p className="numeric text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                {query.data?.data.total} records
+              </p>
+              <ul className="mt-4 divide-y divide-border">
+                {query.data?.data.items.map((record) => (
+                  <li key={record.id} className="flex items-center justify-between gap-4 py-3">
+                    <span className="truncate text-sm">
+                      {(record as BaseRecord & { title?: string; name?: string }).title ??
+                        (record as BaseRecord & { name?: string }).name ??
+                        record.id}
+                    </span>
+                    <span className="text-xs uppercase tracking-[0.18em] text-gold/70">{record.status}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </CardContent>
       </Card>
