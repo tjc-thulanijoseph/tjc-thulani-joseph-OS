@@ -18,7 +18,7 @@ Reload the app afterwards (Vite reads `.env` at startup).
 ## 2. Create the database, RLS policies and storage buckets
 
 In Supabase → SQL Editor → New query, paste the whole of
-`supabase/migrations/0001_tjc_os_init.sql` and run it. It creates:
+`db/tjc_os_init.sql` and run it. It creates:
 
 - `profiles`, `user_roles` (+ `app_role` enum, `has_role()`, `is_staff()`)
 - content tables: media_library, songs, videos, gallery, posts, biography,
