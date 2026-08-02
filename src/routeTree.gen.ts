@@ -21,6 +21,7 @@ import { Route as MusicRouteImport } from './routes/music'
 import { Route as NewsRouteImport } from './routes/news'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VideosRouteImport } from './routes/videos'
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard.index'
@@ -85,6 +86,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
@@ -120,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/news': typeof NewsRoute
   '/privacy': typeof PrivacyRoute
   '/projects': typeof ProjectsRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
   '/videos': typeof VideosRoute
   '/dashboard/$module': typeof AuthenticatedDashboardModuleRoute
@@ -137,6 +144,7 @@ export interface FileRoutesByTo {
   '/news': typeof NewsRoute
   '/privacy': typeof PrivacyRoute
   '/projects': typeof ProjectsRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
   '/videos': typeof VideosRoute
   '/dashboard/$module': typeof AuthenticatedDashboardModuleRoute
@@ -156,6 +164,7 @@ export interface FileRoutesById {
   '/news': typeof NewsRoute
   '/privacy': typeof PrivacyRoute
   '/projects': typeof ProjectsRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
   '/videos': typeof VideosRoute
   '/_authenticated/dashboard/$module': typeof AuthenticatedDashboardModuleRoute
@@ -175,6 +184,7 @@ export interface FileRouteTypes {
     | '/news'
     | '/privacy'
     | '/projects'
+    | '/reset-password'
     | '/terms'
     | '/videos'
     | '/dashboard/$module'
@@ -192,6 +202,7 @@ export interface FileRouteTypes {
     | '/news'
     | '/privacy'
     | '/projects'
+    | '/reset-password'
     | '/terms'
     | '/videos'
     | '/dashboard/$module'
@@ -210,6 +221,7 @@ export interface FileRouteTypes {
     | '/news'
     | '/privacy'
     | '/projects'
+    | '/reset-password'
     | '/terms'
     | '/videos'
     | '/_authenticated/dashboard/$module'
@@ -229,6 +241,7 @@ export interface RootRouteChildren {
   NewsRoute: typeof NewsRoute
   PrivacyRoute: typeof PrivacyRoute
   ProjectsRoute: typeof ProjectsRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   TermsRoute: typeof TermsRoute
   VideosRoute: typeof VideosRoute
 }
@@ -319,6 +332,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/terms': {
       id: '/terms'
       path: '/terms'
@@ -376,6 +396,7 @@ const rootRouteChildren: RootRouteChildren = {
   NewsRoute: NewsRoute,
   PrivacyRoute: PrivacyRoute,
   ProjectsRoute: ProjectsRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   TermsRoute: TermsRoute,
   VideosRoute: VideosRoute,
 }

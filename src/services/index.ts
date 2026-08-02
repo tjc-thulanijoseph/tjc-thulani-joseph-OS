@@ -1,3 +1,5 @@
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { supabaseServices } from "./providers/supabase";
 import { unconfiguredServices } from "./providers/unconfigured";
 import type { ServiceContainer } from "./types";
 
@@ -6,7 +8,7 @@ import type { ServiceContainer } from "./types";
  * during bootstrap) when a backend provider is introduced — no component,
  * hook or route needs to change.
  */
-let container: ServiceContainer = unconfiguredServices;
+let container: ServiceContainer = isSupabaseConfigured ? supabaseServices : unconfiguredServices;
 
 export function setServices(next: ServiceContainer) {
   container = next;
