@@ -9,7 +9,7 @@ import type { AuthSession, BaseRecord, Result } from "@/types";
 const NOT_CONFIGURED = {
   code: "backend_not_configured",
   message:
-    "No backend is connected yet. Configure the data provider in src/services to enable this feature.",
+    "Supabase credentials are missing. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to the .env file at the project root, then reload.",
 } as const;
 
 const fail = <T>(): Promise<Result<T>> => Promise.resolve({ data: null, error: { ...NOT_CONFIGURED } });

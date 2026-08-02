@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/auth-context";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { authService } from "@/services";
 
 export const Route = createFileRoute("/auth")({
@@ -116,12 +117,15 @@ function AuthPage() {
           </form>
         )}
 
-        <p className="mt-8 border-t border-border pt-6 text-xs leading-relaxed text-muted-foreground">
-          Authentication runs through the pluggable service layer. Connect a backend provider in
-          <code className="mx-1 text-gold">src/services</code> to activate sign in.
-        </p>
+        {!isSupabaseConfigured && (
+          <p className="mt-8 border-t border-border pt-6 text-xs leading-relaxed text-muted-foreground">
+            Add <code className="mx-1 text-gold">VITE_SUPABASE_URL</code> and
+            <code className="mx-1 text-gold">VITE_SUPABASE_ANON_KEY</code> to the
+            <code className="mx-1 text-gold">.env</code> file at the project root, then reload to activate sign in.
+          </p>
+        )}
 
-        <Link to="/" className="mt-4 inline-block text-xs uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
+        <Link to="/" className="mt-8 inline-block text-xs uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
           ← Back to site
         </Link>
       </div>
