@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
-import type { AuthService, ListQuery, Page, Repository, ServiceContainer, StorageService } from "../types";
+import type {
+  AuthService, ListQuery, Page, Repository, ServiceContainer, StorageObject, StorageService, UploadOptions,
+} from "../types";
 import type { AuthSession, BaseRecord, Result, Role } from "@/types";
 
 /**
@@ -94,6 +96,79 @@ const storage: StorageService = {
     if (error) return err("storage_upload_failed", error.message);
     return ok({ url: client().storage.from(bucket).getPublicUrl(path).data.publicUrl });
   },
+
+  /** Real byte-level progress: the JS client has no progress events, so we call the Storage REST API directly. */
+  async uploadWithProgress(bucket, path, file, options: UploadOptions = {}) {
+    const sb = client();
+    const { data: sessionData } = await sb.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return err("storage_upload_failed", "You must be signed in to upload files.");
+
+    const base = (import.meta.env['VITE_SUPABASE_URL'] as string).replace(/\/$/, "");
+    const endpoint = `${base}/storage/v1/object/${bucket}/${path.split("/").map(encodeURIComponent).join("/")}`;
+
+    const result = await new Promise<Result<null>>((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.upsert ? "PUT" : "POST", endpoint, true);
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.setRequestHeader("x-upsert", options.upsert ? "true" : "false");
+      if (file.type) xhr.setRequestHeader("Content-Type", file.type);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) options.onProgress?.(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(ok(null));
+        let message = `Upload failed (${xhr.status}).`;
+        try {
+          const parsed = JSON.parse(xhr.responseText) as { message?: string; error?: string };
+          message = parsed.message ?? parsed.error ?? message;
+        } catch { /* keep default message */ }
+        resolve(err("storage_upload_failed", message));
+      };
+      xhr.onerror = () => resolve(err("storage_upload_failed", "Network error during upload."));
+      xhr.onabort = () => resolve(err("storage_upload_aborted", "Upload cancelled."));
+      options.signal?.addEventListener("abort", () => xhr.abort());
+      xhr.send(file);
+    });
+
+    if (result.error) return err(result.error.code, result.error.message);
+    return ok({ url: sb.storage.from(bucket).getPublicUrl(path).data.publicUrl });
+  },
+
+  async list(bucket, prefix = "") {
+    const { data, error } = await client()
+      .storage.from(bucket)
+      .list(prefix, { limit: 1000, sortBy: { column: "created_at", order: "desc" } });
+    if (error) return err("storage_list_failed", error.message);
+
+    const rows = (data ?? []).filter((entry) => entry.id !== null);
+    const items: StorageObject[] = rows.map((entry) => {
+      const metadata = (entry.metadata ?? {}) as { size?: number; mimetype?: string };
+      return {
+        name: entry.name,
+        path: prefix ? `${prefix}/${entry.name}` : entry.name,
+        bucket,
+        size: metadata.size ?? 0,
+        mimeType: metadata.mimetype ?? null,
+        createdAt: entry.created_at ?? null,
+        updatedAt: entry.updated_at ?? null,
+        owner: (entry as { owner?: string | null }).owner ?? null,
+      };
+    });
+    return ok(items);
+  },
+
+  async move(bucket, from, to) {
+    const { error } = await client().storage.from(bucket).move(from, to);
+    return error ? err("storage_move_failed", error.message) : ok(null);
+  },
+
+  async signedUrl(bucket, path, expiresIn = 3600) {
+    const { data, error } = await client().storage.from(bucket).createSignedUrl(path, expiresIn);
+    if (error || !data) return err("storage_signed_url_failed", error?.message ?? "Could not create a link.");
+    return ok({ url: data.signedUrl });
+  },
+
   async remove(bucket, path) {
     const { error } = await client().storage.from(bucket).remove([path]);
     return error ? err("storage_remove_failed", error.message) : ok(null);

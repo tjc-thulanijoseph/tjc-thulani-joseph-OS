@@ -2,6 +2,7 @@ import { createFileRoute, notFound } from "@tanstack/react-router";
 import { DASHBOARD_MODULES, getModule } from "@/config/dashboard-modules";
 import { ModuleWorkspace } from "@/components/dashboard/module-workspace";
 import { OverviewModule } from "@/components/dashboard/overview-module";
+import { MediaLibrary } from "@/components/dashboard/media-library";
 import { useAuth } from "@/contexts/auth-context";
 
 export const Route = createFileRoute("/_authenticated/dashboard/$module")({
@@ -39,5 +40,6 @@ function ModulePage() {
   }
 
   if (module.slug === "overview") return <OverviewModule />;
+  if (module.slug === "media") return <MediaLibrary />;
   return <ModuleWorkspace module={module} />;
 }

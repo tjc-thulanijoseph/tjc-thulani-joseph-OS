@@ -1,4 +1,4 @@
-import type { AuthService, Repository, ServiceContainer, StorageService } from "../types";
+import type { AuthService, Repository, ServiceContainer, StorageObject, StorageService } from "../types";
 import type { AuthSession, BaseRecord, Result } from "@/types";
 
 /**
@@ -25,6 +25,10 @@ const auth: AuthService = {
 
 const storage: StorageService = {
   upload: () => fail<{ url: string }>(),
+  uploadWithProgress: () => fail<{ url: string }>(),
+  list: () => fail<StorageObject[]>(),
+  move: () => fail<null>(),
+  signedUrl: () => fail<{ url: string }>(),
   remove: () => fail<null>(),
   publicUrl: (bucket, path) => `/${bucket}/${path}`,
 };

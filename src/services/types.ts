@@ -37,8 +37,29 @@ export interface Repository<T extends BaseRecord> {
   softDelete(id: string): Promise<Result<null>>;
 }
 
+export interface StorageObject {
+  name: string;
+  path: string;
+  bucket: string;
+  size: number;
+  mimeType: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  owner: string | null;
+}
+
+export interface UploadOptions {
+  upsert?: boolean;
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+}
+
 export interface StorageService {
   upload(bucket: string, path: string, file: File): Promise<Result<{ url: string }>>;
+  uploadWithProgress(bucket: string, path: string, file: File, options?: UploadOptions): Promise<Result<{ url: string }>>;
+  list(bucket: string, prefix?: string): Promise<Result<StorageObject[]>>;
+  move(bucket: string, from: string, to: string): Promise<Result<null>>;
+  signedUrl(bucket: string, path: string, expiresIn?: number): Promise<Result<{ url: string }>>;
   remove(bucket: string, path: string): Promise<Result<null>>;
   publicUrl(bucket: string, path: string): string;
 }
