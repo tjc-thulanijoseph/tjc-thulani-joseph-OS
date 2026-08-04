@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { EmptyState } from "@/components/layout/empty-state";
+import { PublishedCollection } from "@/components/public/published-collection";
 import { PageHero } from "@/components/layout/page-hero";
 import { PublicLayout } from "@/components/layout/public-layout";
 
@@ -21,7 +21,7 @@ function Page() {
   return (
     <PublicLayout>
       <PageHero eyebrow="About" title="The story so far" intro="The life, the influences and the path behind the work of Thulani Joseph." />
-      <EmptyState title="Biography coming soon" body="The full biography, timeline and achievements are published from TJC OS and will appear here." />
+      <PublishedCollection resource="biography" emptyTitle="Biography coming soon" emptyBody="The full biography, timeline and achievements are published from TJC OS and will appear here." showBody />
     </PublicLayout>
   );
 }

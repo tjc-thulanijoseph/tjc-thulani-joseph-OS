@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { EmptyState } from "@/components/layout/empty-state";
+import { PublishedCollection } from "@/components/public/published-collection";
 import { PageHero } from "@/components/layout/page-hero";
 import { PublicLayout } from "@/components/layout/public-layout";
 
@@ -21,7 +21,7 @@ function Page() {
   return (
     <PublicLayout>
       <PageHero eyebrow="Projects" title="Projects" intro="Creative ventures, collaborations and work currently in progress." />
-      <EmptyState title="No projects published yet" body="Projects added in TJC OS will appear here as they are made public." />
+      <PublishedCollection resource="projects" emptyTitle="No projects published yet" emptyBody="Projects added in TJC OS will appear here as they are made public." />
     </PublicLayout>
   );
 }
