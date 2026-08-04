@@ -2,6 +2,7 @@ import { createFileRoute, notFound } from "@tanstack/react-router";
 import { DASHBOARD_MODULES, getModule } from "@/config/dashboard-modules";
 import { ModuleWorkspace } from "@/components/dashboard/module-workspace";
 import { OverviewModule } from "@/components/dashboard/overview-module";
+import { useAuth } from "@/contexts/auth-context";
 
 export const Route = createFileRoute("/_authenticated/dashboard/$module")({
   beforeLoad: ({ params }) => {
@@ -22,6 +23,21 @@ export const Route = createFileRoute("/_authenticated/dashboard/$module")({
 function ModulePage() {
   const { module: slug } = Route.useParams();
   const module = getModule(slug)!;
+  const { atLeast, loading } = useAuth();
+
+  if (!loading && !atLeast(module.minRole)) {
+    return (
+      <div className="mx-auto max-w-6xl">
+        <p className="text-xs uppercase tracking-[0.28em] text-gold">{module.group}</p>
+        <h1 className="mt-3 font-display text-3xl font-semibold">{module.label}</h1>
+        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          Your account does not have permission to open this module. It requires the{" "}
+          <span className="text-foreground">{module.minRole}</span> role or higher.
+        </p>
+      </div>
+    );
+  }
+
   if (module.slug === "overview") return <OverviewModule />;
   return <ModuleWorkspace module={module} />;
 }
