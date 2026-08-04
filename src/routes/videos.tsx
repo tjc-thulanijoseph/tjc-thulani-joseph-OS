@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { EmptyState } from "@/components/layout/empty-state";
+import { PublishedCollection } from "@/components/public/published-collection";
 import { PageHero } from "@/components/layout/page-hero";
 import { PublicLayout } from "@/components/layout/public-layout";
 
@@ -21,7 +21,7 @@ function Page() {
   return (
     <PublicLayout>
       <PageHero eyebrow="Videos" title="Videos" intro="Visual work, performances and film by Thulani Joseph." />
-      <EmptyState title="No videos published yet" body="Videos added in the TJC OS Video Manager will be listed here." />
+      <PublishedCollection resource="videos" emptyTitle="No videos published yet" emptyBody="Videos added in the TJC OS Video Manager will be listed here." />
     </PublicLayout>
   );
 }

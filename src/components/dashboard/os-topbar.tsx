@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Bell, LogOut, Search } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -13,9 +14,12 @@ import { useAuth } from "@/contexts/auth-context";
 export function OsTopbar() {
   const { session, signOut } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const initials = (session?.user.displayName ?? session?.user.email ?? "TJ").slice(0, 2).toUpperCase();
 
   async function handleSignOut() {
+    await queryClient.cancelQueries();
+    queryClient.clear();
     await signOut();
     navigate({ to: "/auth", replace: true });
   }
