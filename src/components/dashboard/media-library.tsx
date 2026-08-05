@@ -6,6 +6,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -14,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { services } from "@/services";
 import type { StorageObject } from "@/services";
+import { optimizeImage } from "@/lib/image-optimize";
 import { cn } from "@/lib/utils";
 
 const BUCKETS = ["images", "videos", "music", "documents", "avatars"] as const;
@@ -48,15 +53,28 @@ const ACCEPT: Record<Bucket, string> = {
 /** Optional soft quota, in GB. Only shown when configured — nothing is invented. */
 const QUOTA_GB = Number(import.meta.env['VITE_SUPABASE_STORAGE_QUOTA_GB'] ?? 0);
 
-type SortKey = "newest" | "oldest" | "name" | "size";
+type SortKey = "newest" | "oldest" | "largest" | "smallest" | "az" | "za";
 
 interface UploadTask {
   id: string;
   name: string;
   bucket: Bucket;
   percent: number;
-  status: "uploading" | "done" | "error";
+  status: "uploading" | "done" | "error" | "cancelled";
   error?: string;
+  /** Seconds remaining, estimated from observed throughput. */
+  eta: number | null;
+}
+
+function formatEta(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds)) return "—";
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s left`;
+  return `${Math.round(seconds / 60)}m left`;
+}
+
+function extensionOf(name: string) {
+  const match = /\.([^.]+)$/.exec(name);
+  return match ? match[1]!.toLowerCase() : "";
 }
 
 function formatBytes(bytes: number) {
