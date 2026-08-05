@@ -157,12 +157,19 @@ export function MediaLibrary() {
     const filtered = all.filter(
       (item) =>
         (bucketFilter === "all" || item.bucket === bucketFilter) &&
-        (!term || item.name.toLowerCase().includes(term)),
+        (!term ||
+          item.name.toLowerCase().includes(term) ||
+          item.bucket.toLowerCase().includes(term) ||
+          BUCKET_LABEL[item.bucket as Bucket]?.toLowerCase().includes(term) ||
+          extensionOf(item.name).includes(term.replace(/^\./, "")) ||
+          (item.owner ?? "").toLowerCase().includes(term)),
     );
     const sorted = [...filtered];
     sorted.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "size") return b.size - a.size;
+      if (sort === "az") return a.name.localeCompare(b.name);
+      if (sort === "za") return b.name.localeCompare(a.name);
+      if (sort === "largest") return b.size - a.size;
+      if (sort === "smallest") return a.size - b.size;
       const at = a.createdAt ? Date.parse(a.createdAt) : 0;
       const bt = b.createdAt ? Date.parse(b.createdAt) : 0;
       return sort === "oldest" ? at - bt : bt - at;
@@ -172,33 +179,72 @@ export function MediaLibrary() {
 
   const used = all.reduce((total, item) => total + item.size, 0);
   const quotaBytes = QUOTA_GB > 0 ? QUOTA_GB * 1024 ** 3 : 0;
+  const countByBucket = useMemo(() => {
+    const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0])) as Record<Bucket, number>;
+    for (const item of all) if (item.bucket in counts) counts[item.bucket as Bucket] += 1;
+    return counts;
+  }, [all]);
 
   const startUploads = useCallback(
     async (files: File[], bucket: Bucket, targetPath?: string) => {
       const storage = services().storage;
       for (const file of files) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const path = targetPath ?? `${Date.now()}-${safeName(file.name) || "file"}`;
-        setTasks((prev) => [...prev, { id, name: file.name, bucket, percent: 0, status: "uploading" }]);
+        const originalName = file.name;
+        setTasks((prev) => [...prev, { id, name: originalName, bucket, percent: 0, status: "uploading", eta: null }]);
 
-        const result = await storage.uploadWithProgress(bucket, path, file, {
+        // Images and avatars are optimised in the browser before they leave the device.
+        let payload = file;
+        if ((bucket === "images" || bucket === "avatars") && file.type.startsWith("image/")) {
+          try {
+            const optimised = await optimizeImage(file);
+            payload = optimised.file;
+            if (optimised.optimized) {
+              const saved = Math.round((1 - payload.size / optimised.originalSize) * 100);
+              if (saved > 0) toast.message(`${originalName} optimised`, { description: `${saved}% smaller before upload.` });
+            }
+          } catch { /* upload the original if optimisation fails */ }
+        }
+
+        const path = targetPath ?? `${Date.now()}-${safeName(payload.name) || "file"}`;
+        const controller = new AbortController();
+        controllers.current.set(id, controller);
+        retryables.current.set(id, { file, bucket, targetPath });
+        const startedAt = Date.now();
+
+        const result = await storage.uploadWithProgress(bucket, path, payload, {
           upsert: Boolean(targetPath),
+          signal: controller.signal,
           onProgress: (percent) =>
-            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent } : task))),
+            setTasks((prev) =>
+              prev.map((task) => {
+                if (task.id !== id) return task;
+                const elapsed = (Date.now() - startedAt) / 1000;
+                const eta = percent > 0 && elapsed > 0.5 ? (elapsed / percent) * (100 - percent) : null;
+                return { ...task, percent, eta };
+              }),
+            ),
         });
 
+        controllers.current.delete(id);
+
         if (result.error) {
+          const cancelled = result.error.code === "storage_upload_aborted";
           setTasks((prev) =>
             prev.map((task) =>
-              task.id === id ? { ...task, status: "error", error: result.error!.message } : task,
+              task.id === id
+                ? { ...task, status: cancelled ? "cancelled" : "error", eta: null, error: cancelled ? undefined : result.error!.message }
+                : task,
             ),
           );
-          toast.error(`${file.name} failed`, { description: result.error.message });
+          if (cancelled) toast.message(`${originalName} cancelled`);
+          else toast.error(`${originalName} failed`, { description: result.error.message });
         } else {
+          retryables.current.delete(id);
           setTasks((prev) =>
-            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100 } : task)),
+            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100, eta: null } : task)),
           );
-          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`);
+          toast.success(`${originalName} uploaded to ${BUCKET_LABEL[bucket]}`);
           setTimeout(() => setTasks((prev) => prev.filter((task) => task.id !== id)), 4000);
         }
       }
@@ -206,6 +252,18 @@ export function MediaLibrary() {
     },
     [refresh],
   );
+
+  function cancelTask(id: string) {
+    controllers.current.get(id)?.abort();
+  }
+
+  function retryTask(id: string) {
+    const info = retryables.current.get(id);
+    if (!info) return;
+    retryables.current.delete(id);
+    setTasks((prev) => prev.filter((task) => task.id !== id));
+    void startUploads([info.file], info.bucket, info.targetPath);
+  }
 
   async function handleCopyUrl(item: StorageObject) {
     try {
