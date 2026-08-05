@@ -6,6 +6,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -14,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { services } from "@/services";
 import type { StorageObject } from "@/services";
+import { optimizeImage } from "@/lib/image-optimize";
 import { cn } from "@/lib/utils";
 
 const BUCKETS = ["images", "videos", "music", "documents", "avatars"] as const;
@@ -48,15 +53,28 @@ const ACCEPT: Record<Bucket, string> = {
 /** Optional soft quota, in GB. Only shown when configured — nothing is invented. */
 const QUOTA_GB = Number(import.meta.env['VITE_SUPABASE_STORAGE_QUOTA_GB'] ?? 0);
 
-type SortKey = "newest" | "oldest" | "name" | "size";
+type SortKey = "newest" | "oldest" | "largest" | "smallest" | "az" | "za";
 
 interface UploadTask {
   id: string;
   name: string;
   bucket: Bucket;
   percent: number;
-  status: "uploading" | "done" | "error";
-  error?: string;
+  status: "uploading" | "done" | "error" | "cancelled";
+  error?: string | undefined;
+  /** Seconds remaining, estimated from observed throughput. */
+  eta: number | null;
+}
+
+function formatEta(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds)) return "—";
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s left`;
+  return `${Math.round(seconds / 60)}m left`;
+}
+
+function extensionOf(name: string) {
+  const match = /\.([^.]+)$/.exec(name);
+  return match ? match[1]!.toLowerCase() : "";
 }
 
 function formatBytes(bytes: number) {
@@ -105,10 +123,13 @@ export function MediaLibrary() {
   const [preview, setPreview] = useState<{ item: StorageObject; url: string } | null>(null);
   const [renaming, setRenaming] = useState<StorageObject | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<StorageObject | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const replaceTarget = useRef<StorageObject | null>(null);
+  const controllers = useRef(new Map<string, AbortController>());
+  const retryables = useRef(new Map<string, { file: File; bucket: Bucket; targetPath?: string | undefined }>());
 
   const query = useQuery({
     queryKey: ["media-library"],
@@ -139,12 +160,19 @@ export function MediaLibrary() {
     const filtered = all.filter(
       (item) =>
         (bucketFilter === "all" || item.bucket === bucketFilter) &&
-        (!term || item.name.toLowerCase().includes(term)),
+        (!term ||
+          item.name.toLowerCase().includes(term) ||
+          item.bucket.toLowerCase().includes(term) ||
+          BUCKET_LABEL[item.bucket as Bucket]?.toLowerCase().includes(term) ||
+          extensionOf(item.name).includes(term.replace(/^\./, "")) ||
+          (item.owner ?? "").toLowerCase().includes(term)),
     );
     const sorted = [...filtered];
     sorted.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "size") return b.size - a.size;
+      if (sort === "az") return a.name.localeCompare(b.name);
+      if (sort === "za") return b.name.localeCompare(a.name);
+      if (sort === "largest") return b.size - a.size;
+      if (sort === "smallest") return a.size - b.size;
       const at = a.createdAt ? Date.parse(a.createdAt) : 0;
       const bt = b.createdAt ? Date.parse(b.createdAt) : 0;
       return sort === "oldest" ? at - bt : bt - at;
@@ -154,33 +182,72 @@ export function MediaLibrary() {
 
   const used = all.reduce((total, item) => total + item.size, 0);
   const quotaBytes = QUOTA_GB > 0 ? QUOTA_GB * 1024 ** 3 : 0;
+  const countByBucket = useMemo(() => {
+    const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0])) as Record<Bucket, number>;
+    for (const item of all) if (item.bucket in counts) counts[item.bucket as Bucket] += 1;
+    return counts;
+  }, [all]);
 
   const startUploads = useCallback(
     async (files: File[], bucket: Bucket, targetPath?: string) => {
       const storage = services().storage;
       for (const file of files) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const path = targetPath ?? `${Date.now()}-${safeName(file.name) || "file"}`;
-        setTasks((prev) => [...prev, { id, name: file.name, bucket, percent: 0, status: "uploading" }]);
+        const originalName = file.name;
+        setTasks((prev) => [...prev, { id, name: originalName, bucket, percent: 0, status: "uploading", eta: null }]);
 
-        const result = await storage.uploadWithProgress(bucket, path, file, {
+        // Images and avatars are optimised in the browser before they leave the device.
+        let payload = file;
+        if ((bucket === "images" || bucket === "avatars") && file.type.startsWith("image/")) {
+          try {
+            const optimised = await optimizeImage(file);
+            payload = optimised.file;
+            if (optimised.optimized) {
+              const saved = Math.round((1 - payload.size / optimised.originalSize) * 100);
+              if (saved > 0) toast.message(`${originalName} optimised`, { description: `${saved}% smaller before upload.` });
+            }
+          } catch { /* upload the original if optimisation fails */ }
+        }
+
+        const path = targetPath ?? `${Date.now()}-${safeName(payload.name) || "file"}`;
+        const controller = new AbortController();
+        controllers.current.set(id, controller);
+        retryables.current.set(id, { file, bucket, targetPath });
+        const startedAt = Date.now();
+
+        const result = await storage.uploadWithProgress(bucket, path, payload, {
           upsert: Boolean(targetPath),
+          signal: controller.signal,
           onProgress: (percent) =>
-            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent } : task))),
+            setTasks((prev) =>
+              prev.map((task) => {
+                if (task.id !== id) return task;
+                const elapsed = (Date.now() - startedAt) / 1000;
+                const eta = percent > 0 && elapsed > 0.5 ? (elapsed / percent) * (100 - percent) : null;
+                return { ...task, percent, eta };
+              }),
+            ),
         });
 
+        controllers.current.delete(id);
+
         if (result.error) {
+          const cancelled = result.error.code === "storage_upload_aborted";
           setTasks((prev) =>
             prev.map((task) =>
-              task.id === id ? { ...task, status: "error", error: result.error!.message } : task,
+              task.id === id
+                ? { ...task, status: cancelled ? "cancelled" : "error", eta: null, error: cancelled ? undefined : result.error!.message }
+                : task,
             ),
           );
-          toast.error(`${file.name} failed`, { description: result.error.message });
+          if (cancelled) toast.message(`${originalName} cancelled`);
+          else toast.error(`${originalName} failed`, { description: result.error.message });
         } else {
+          retryables.current.delete(id);
           setTasks((prev) =>
-            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100 } : task)),
+            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100, eta: null } : task)),
           );
-          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`);
+          toast.success(`${originalName} uploaded to ${BUCKET_LABEL[bucket]}`);
           setTimeout(() => setTasks((prev) => prev.filter((task) => task.id !== id)), 4000);
         }
       }
@@ -188,6 +255,18 @@ export function MediaLibrary() {
     },
     [refresh],
   );
+
+  function cancelTask(id: string) {
+    controllers.current.get(id)?.abort();
+  }
+
+  function retryTask(id: string) {
+    const info = retryables.current.get(id);
+    if (!info) return;
+    retryables.current.delete(id);
+    setTasks((prev) => prev.filter((task) => task.id !== id));
+    void startUploads([info.file], info.bucket, info.targetPath);
+  }
 
   async function handleCopyUrl(item: StorageObject) {
     try {
@@ -222,10 +301,10 @@ export function MediaLibrary() {
   }
 
   async function handleDelete(item: StorageObject) {
-    if (!window.confirm(`Delete “${item.name}” permanently from ${BUCKET_LABEL[item.bucket as Bucket]}?`)) return;
     setBusy(true);
     const result = await services().storage.remove(item.bucket, item.path);
     setBusy(false);
+    setDeleteTarget(null);
     if (result.error) toast.error("Delete failed", { description: result.error.message });
     else {
       toast.success(`${item.name} deleted`);
@@ -291,11 +370,16 @@ export function MediaLibrary() {
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-3">
             <Usage label="Used" value={formatBytes(used)} />
-            <Usage label="Files" value={String(all.length)} />
+            <Usage label="Total files" value={String(all.length)} />
             <Usage
               label="Remaining"
               value={quotaBytes ? formatBytes(Math.max(quotaBytes - used, 0)) : "Quota not set"}
             />
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+            {BUCKETS.map((bucket) => (
+              <Usage key={bucket} label={BUCKET_LABEL[bucket]} value={String(countByBucket[bucket])} />
+            ))}
           </div>
           {quotaBytes > 0 && (
             <>
@@ -385,9 +469,33 @@ export function MediaLibrary() {
                 <li key={task.id} className="rounded-xl border border-border p-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm">{task.name}</span>
-                    <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      {task.status === "error" ? "Failed" : `${task.percent}%`}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        {task.status === "error"
+                          ? "Failed"
+                          : task.status === "cancelled"
+                            ? "Cancelled"
+                            : task.status === "done"
+                              ? "Done"
+                              : `${task.percent}% · ${formatEta(task.eta)}`}
+                      </span>
+                      {task.status === "uploading" && (
+                        <Button size="sm" variant="ghost" onClick={() => cancelTask(task.id)}>Cancel</Button>
+                      )}
+                      {(task.status === "error" || task.status === "cancelled") && (
+                        <>
+                          <Button size="sm" variant="ghost" onClick={() => retryTask(task.id)}>Retry</Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label="Dismiss"
+                            onClick={() => setTasks((prev) => prev.filter((entry) => entry.id !== task.id))}
+                          >
+                            <X className="size-4" aria-hidden />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <Progress className="mt-2 h-1.5" value={task.status === "error" ? 100 : task.percent} />
                   {task.error && <p className="mt-2 text-xs text-destructive">{task.error}</p>}
@@ -405,7 +513,7 @@ export function MediaLibrary() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search media…"
+              placeholder="Search name, bucket, uploader or extension…"
               className="h-9 w-full max-w-xs"
             />
             <Select value={bucketFilter} onValueChange={(value) => setBucketFilter(value as Bucket | "all")}>
@@ -422,8 +530,10 @@ export function MediaLibrary() {
               <SelectContent>
                 <SelectItem value="newest">Newest</SelectItem>
                 <SelectItem value="oldest">Oldest</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="size">Size</SelectItem>
+                <SelectItem value="largest">Largest</SelectItem>
+                <SelectItem value="smallest">Smallest</SelectItem>
+                <SelectItem value="az">A–Z</SelectItem>
+                <SelectItem value="za">Z–A</SelectItem>
               </SelectContent>
             </Select>
             <div className="ml-auto flex items-center gap-1">
@@ -467,7 +577,7 @@ export function MediaLibrary() {
                   onDownload={() => void handleDownload(item)}
                   onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                   onReplace={() => triggerReplace(item)}
-                  onDelete={() => void handleDelete(item)}
+                  onDelete={() => setDeleteTarget(item)}
                 />
               ))}
             </div>
@@ -488,7 +598,7 @@ export function MediaLibrary() {
                     onDownload={() => void handleDownload(item)}
                     onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                     onReplace={() => triggerReplace(item)}
-                    onDelete={() => void handleDelete(item)}
+                    onDelete={() => setDeleteTarget(item)}
                   />
                 </li>
               ))}
@@ -548,6 +658,30 @@ export function MediaLibrary() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">Delete this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.name} will be permanently removed from{" "}
+              {BUCKET_LABEL[(deleteTarget?.bucket ?? "images") as Bucket]}. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault();
+                if (deleteTarget) void handleDelete(deleteTarget);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
