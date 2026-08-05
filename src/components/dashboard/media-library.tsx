@@ -469,9 +469,33 @@ export function MediaLibrary() {
                 <li key={task.id} className="rounded-xl border border-border p-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm">{task.name}</span>
-                    <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      {task.status === "error" ? "Failed" : `${task.percent}%`}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        {task.status === "error"
+                          ? "Failed"
+                          : task.status === "cancelled"
+                            ? "Cancelled"
+                            : task.status === "done"
+                              ? "Done"
+                              : `${task.percent}% · ${formatEta(task.eta)}`}
+                      </span>
+                      {task.status === "uploading" && (
+                        <Button size="sm" variant="ghost" onClick={() => cancelTask(task.id)}>Cancel</Button>
+                      )}
+                      {(task.status === "error" || task.status === "cancelled") && (
+                        <>
+                          <Button size="sm" variant="ghost" onClick={() => retryTask(task.id)}>Retry</Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label="Dismiss"
+                            onClick={() => setTasks((prev) => prev.filter((entry) => entry.id !== task.id))}
+                          >
+                            <X className="size-4" aria-hidden />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <Progress className="mt-2 h-1.5" value={task.status === "error" ? 100 : task.percent} />
                   {task.error && <p className="mt-2 text-xs text-destructive">{task.error}</p>}
@@ -489,7 +513,7 @@ export function MediaLibrary() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search media…"
+              placeholder="Search name, bucket, uploader or extension…"
               className="h-9 w-full max-w-xs"
             />
             <Select value={bucketFilter} onValueChange={(value) => setBucketFilter(value as Bucket | "all")}>
@@ -506,8 +530,10 @@ export function MediaLibrary() {
               <SelectContent>
                 <SelectItem value="newest">Newest</SelectItem>
                 <SelectItem value="oldest">Oldest</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="size">Size</SelectItem>
+                <SelectItem value="largest">Largest</SelectItem>
+                <SelectItem value="smallest">Smallest</SelectItem>
+                <SelectItem value="az">A–Z</SelectItem>
+                <SelectItem value="za">Z–A</SelectItem>
               </SelectContent>
             </Select>
             <div className="ml-auto flex items-center gap-1">
@@ -551,7 +577,7 @@ export function MediaLibrary() {
                   onDownload={() => void handleDownload(item)}
                   onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                   onReplace={() => triggerReplace(item)}
-                  onDelete={() => void handleDelete(item)}
+                  onDelete={() => setDeleteTarget(item)}
                 />
               ))}
             </div>
@@ -572,7 +598,7 @@ export function MediaLibrary() {
                     onDownload={() => void handleDownload(item)}
                     onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                     onReplace={() => triggerReplace(item)}
-                    onDelete={() => void handleDelete(item)}
+                    onDelete={() => setDeleteTarget(item)}
                   />
                 </li>
               ))}
@@ -632,6 +658,30 @@ export function MediaLibrary() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">Delete this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.name} will be permanently removed from{" "}
+              {BUCKET_LABEL[(deleteTarget?.bucket ?? "images") as Bucket]}. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault();
+                if (deleteTarget) void handleDelete(deleteTarget);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
