@@ -123,6 +123,7 @@ export function MediaLibrary() {
   const [preview, setPreview] = useState<{ item: StorageObject; url: string } | null>(null);
   const [renaming, setRenaming] = useState<StorageObject | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<StorageObject | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
@@ -300,10 +301,10 @@ export function MediaLibrary() {
   }
 
   async function handleDelete(item: StorageObject) {
-    if (!window.confirm(`Delete “${item.name}” permanently from ${BUCKET_LABEL[item.bucket as Bucket]}?`)) return;
     setBusy(true);
     const result = await services().storage.remove(item.bucket, item.path);
     setBusy(false);
+    setDeleteTarget(null);
     if (result.error) toast.error("Delete failed", { description: result.error.message });
     else {
       toast.success(`${item.name} deleted`);
@@ -369,11 +370,16 @@ export function MediaLibrary() {
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-3">
             <Usage label="Used" value={formatBytes(used)} />
-            <Usage label="Files" value={String(all.length)} />
+            <Usage label="Total files" value={String(all.length)} />
             <Usage
               label="Remaining"
               value={quotaBytes ? formatBytes(Math.max(quotaBytes - used, 0)) : "Quota not set"}
             />
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+            {BUCKETS.map((bucket) => (
+              <Usage key={bucket} label={BUCKET_LABEL[bucket]} value={String(countByBucket[bucket])} />
+            ))}
           </div>
           {quotaBytes > 0 && (
             <>
