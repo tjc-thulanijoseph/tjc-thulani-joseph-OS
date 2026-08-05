@@ -61,7 +61,7 @@ interface UploadTask {
   bucket: Bucket;
   percent: number;
   status: "uploading" | "done" | "error" | "cancelled";
-  error?: string;
+  error?: string | undefined;
   /** Seconds remaining, estimated from observed throughput. */
   eta: number | null;
 }
@@ -127,6 +127,8 @@ export function MediaLibrary() {
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const replaceTarget = useRef<StorageObject | null>(null);
+  const controllers = useRef(new Map<string, AbortController>());
+  const retryables = useRef(new Map<string, { file: File; bucket: Bucket; targetPath?: string | undefined }>());
 
   const query = useQuery({
     queryKey: ["media-library"],
