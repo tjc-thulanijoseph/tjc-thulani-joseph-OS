@@ -1,8 +1,9 @@
 import { supabase } from "@/lib/supabase";
 import type {
-  AuthService, ListQuery, Page, Repository, ServiceContainer, StorageObject, StorageService, UploadOptions,
+  ActivityService, AuthService, ListQuery, Page, PeopleService, Repository, ServiceContainer,
+  StorageObject, StorageService, TeamMember, UploadOptions,
 } from "../types";
-import type { AuthSession, BaseRecord, Result, Role } from "@/types";
+import type { ActivityEntry, AuthSession, BaseRecord, Result, Role } from "@/types";
 
 /**
  * Supabase provider. Implements the same contracts as every other provider,
@@ -182,7 +183,7 @@ function repository<T extends BaseRecord>(resource: string): Repository<T> {
   return {
     async list(query: ListQuery = {}) {
       const page = query.page ?? 1;
-      const perPage = query.perPage ?? 20;
+      const perPage = query.perPage ?? 24;
       const from = (page - 1) * perPage;
 
       let request = table()
@@ -192,7 +193,11 @@ function repository<T extends BaseRecord>(resource: string): Repository<T> {
         .range(from, from + perPage - 1);
 
       if (query.status) request = request.eq("status", query.status);
-      if (query.search) request = request.ilike("title", `%${query.search}%`);
+      if (query.search) {
+        const fields = query.searchFields ?? ["title", "description"];
+        const term = query.search.replace(/[%,()]/g, " ").trim();
+        if (term) request = request.or(fields.map((field) => `${field}.ilike.%${term}%`).join(","));
+      }
 
       const { data, error, count } = await request;
       if (error) return err("list_failed", error.message);
@@ -222,11 +227,97 @@ function repository<T extends BaseRecord>(resource: string): Repository<T> {
       const { error } = await table().update({ deleted_at: new Date().toISOString() } as never).eq("id", id);
       return error ? err("delete_failed", error.message) : ok(null);
     },
+
+    async remove(id) {
+      const { error } = await table().delete().eq("id", id);
+      return error ? err("delete_failed", error.message) : ok(null);
+    },
+
+    async upsertBySlug(slug, input) {
+      const { data, error } = await table()
+        .upsert({ ...(input as object), slug } as never, { onConflict: "slug" })
+        .select()
+        .single();
+      if (error) return err("save_failed", error.message);
+      return ok(data as T);
+    },
   };
 }
+
+const people: PeopleService = {
+  async list() {
+    const sb = client();
+    const [{ data: profiles, error }, { data: roleRows, error: roleError }] = await Promise.all([
+      sb.from("profiles").select("id, email, display_name, avatar_url, created_at").order("created_at"),
+      sb.from("user_roles").select("user_id, role"),
+    ]);
+    if (error) return err("people_list_failed", error.message);
+    if (roleError) return err("people_list_failed", roleError.message);
+
+    const byUser = new Map<string, Role[]>();
+    for (const row of (roleRows ?? []) as { user_id: string; role: Role }[]) {
+      byUser.set(row.user_id, [...(byUser.get(row.user_id) ?? []), row.role]);
+    }
+
+    const rows = (profiles ?? []) as {
+      id: string; email: string | null; display_name: string | null; avatar_url: string | null; created_at: string | null;
+    }[];
+    return ok<TeamMember[]>(
+      rows.map((row) => ({
+        id: row.id,
+        email: row.email,
+        displayName: row.display_name,
+        avatarUrl: row.avatar_url,
+        roles: byUser.get(row.id) ?? [],
+        createdAt: row.created_at,
+      })),
+    );
+  },
+
+  async grantRole(userId, role) {
+    const { error } = await client().from("user_roles").insert({ user_id: userId, role } as never);
+    return error ? err("role_grant_failed", error.message) : ok(null);
+  },
+
+  async revokeRole(userId, role) {
+    const { error } = await client().from("user_roles").delete().eq("user_id", userId).eq("role", role);
+    return error ? err("role_revoke_failed", error.message) : ok(null);
+  },
+};
+
+const activity: ActivityService = {
+  async log(entry) {
+    try {
+      const sb = client();
+      const { data } = await sb.auth.getUser();
+      if (!data.user) return;
+      await sb.from("activity_logs").insert({
+        actor_id: data.user.id,
+        action: entry.action,
+        resource: entry.resource ?? null,
+        resource_id: entry.resourceId ?? null,
+        metadata: entry.metadata ?? {},
+      } as never);
+    } catch {
+      /* logging must never break the action it describes */
+    }
+  },
+
+  async list(limit = 100) {
+    const { data, error } = await client()
+      .from("activity_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) return err("activity_list_failed", error.message);
+    return ok((data ?? []) as ActivityEntry[]);
+  },
+};
 
 export const supabaseServices: ServiceContainer = {
   auth,
   storage,
+  people,
+  activity,
   repository: <T extends BaseRecord>(resource: string) => repository<T>(resource),
 };

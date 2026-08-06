@@ -1,4 +1,4 @@
-import type { AuthSession, BaseRecord, Credentials, Result } from "@/types";
+import type { ActivityEntry, AuthSession, BaseRecord, Credentials, Result, Role, UUID } from "@/types";
 
 /**
  * Service contracts. The application only ever talks to these interfaces,
@@ -18,7 +18,10 @@ export interface ListQuery {
   page?: number;
   perPage?: number;
   search?: string;
+  /** Restrict to a single status. Omit to read every status the policy allows. */
   status?: string;
+  /** Columns searched by `search`. Defaults to title + description. */
+  searchFields?: string[];
   orderBy?: string;
   ascending?: boolean;
 }
@@ -34,7 +37,12 @@ export interface Repository<T extends BaseRecord> {
   getBySlugOrId(key: string): Promise<Result<T | null>>;
   create(input: Partial<T>): Promise<Result<T>>;
   update(id: string, input: Partial<T>): Promise<Result<T>>;
+  /** Marks deleted_at — the row stays recoverable. */
   softDelete(id: string): Promise<Result<null>>;
+  /** Permanently removes the row. */
+  remove(id: string): Promise<Result<null>>;
+  /** Creates or updates the row identified by `slug` (used for singletons). */
+  upsertBySlug(slug: string, input: Partial<T>): Promise<Result<T>>;
 }
 
 export interface StorageObject {
@@ -64,8 +72,31 @@ export interface StorageService {
   publicUrl(bucket: string, path: string): string;
 }
 
+export interface TeamMember {
+  id: UUID;
+  email: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  roles: Role[];
+  createdAt: string | null;
+}
+
+/** Roster and role administration. Only a CEO may grant or revoke roles (enforced by RLS). */
+export interface PeopleService {
+  list(): Promise<Result<TeamMember[]>>;
+  grantRole(userId: UUID, role: Role): Promise<Result<null>>;
+  revokeRole(userId: UUID, role: Role): Promise<Result<null>>;
+}
+
+export interface ActivityService {
+  log(entry: { action: string; resource?: string; resourceId?: string | null; metadata?: Record<string, unknown> }): Promise<void>;
+  list(limit?: number): Promise<Result<ActivityEntry[]>>;
+}
+
 export interface ServiceContainer {
   auth: AuthService;
   storage: StorageService;
+  people: PeopleService;
+  activity: ActivityService;
   repository<T extends BaseRecord>(resource: string): Repository<T>;
 }

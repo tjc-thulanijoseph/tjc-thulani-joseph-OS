@@ -1,5 +1,7 @@
-import type { AuthService, Repository, ServiceContainer, StorageObject, StorageService } from "../types";
-import type { AuthSession, BaseRecord, Result } from "@/types";
+import type {
+  ActivityService, AuthService, PeopleService, Repository, ServiceContainer, StorageObject, StorageService, TeamMember,
+} from "../types";
+import type { ActivityEntry, AuthSession, BaseRecord, Result } from "@/types";
 
 /**
  * Default provider used until a backend is wired up.
@@ -40,12 +42,27 @@ function repository<T extends BaseRecord>(): Repository<T> {
     create: () => fail<T>(),
     update: () => fail<T>(),
     softDelete: () => fail<null>(),
+    remove: () => fail<null>(),
+    upsertBySlug: () => fail<T>(),
   };
 }
+
+const people: PeopleService = {
+  list: () => fail<TeamMember[]>(),
+  grantRole: () => fail<null>(),
+  revokeRole: () => fail<null>(),
+};
+
+const activity: ActivityService = {
+  log: async () => {},
+  list: () => fail<ActivityEntry[]>(),
+};
 
 export const unconfiguredServices: ServiceContainer = {
   auth,
   storage,
+  people,
+  activity,
   repository: <T extends BaseRecord>() => repository<T>(),
 };
 
