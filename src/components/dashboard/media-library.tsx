@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Copy, Download, FileText, Grid2X2, HardDrive, Image as ImageIcon, List, Music, Pencil,
-  RefreshCw, Trash2, Upload, Video, X,
+  Ban, Copy, Download, FileText, Grid2X2, HardDrive, Image as ImageIcon, List, Music, Pencil,
+  RefreshCw, RotateCcw, Trash2, Upload, Video, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -15,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { services } from "@/services";
 import type { StorageObject } from "@/services";
 import { cn } from "@/lib/utils";
+import { optimizeImage } from "@/lib/image-optimize";
 
 const BUCKETS = ["images", "videos", "music", "documents", "avatars"] as const;
 type Bucket = (typeof BUCKETS)[number];
@@ -48,7 +53,7 @@ const ACCEPT: Record<Bucket, string> = {
 /** Optional soft quota, in GB. Only shown when configured — nothing is invented. */
 const QUOTA_GB = Number(import.meta.env['VITE_SUPABASE_STORAGE_QUOTA_GB'] ?? 0);
 
-type SortKey = "newest" | "oldest" | "name" | "size";
+type SortKey = "newest" | "oldest" | "largest" | "smallest" | "az" | "za";
 
 interface UploadTask {
   id: string;
@@ -57,6 +62,10 @@ interface UploadTask {
   percent: number;
   status: "uploading" | "done" | "error";
   error?: string;
+  etaSeconds?: number | null;
+  controller?: AbortController;
+  file?: File;
+  targetPath?: string;
 }
 
 function formatBytes(bytes: number) {
@@ -69,6 +78,18 @@ function formatBytes(bytes: number) {
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+}
+
+function formatEta(seconds: number | null | undefined) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return null;
+  if (seconds < 1) return "less than a second left";
+  if (seconds < 60) return `${Math.ceil(seconds)}s left`;
+  return `${Math.floor(seconds / 60)}m ${Math.ceil(seconds % 60)}s left`;
+}
+
+function extensionOf(name: string) {
+  const match = /\.([^./\\]+)$/.exec(name);
+  return match ? match[1]!.toLowerCase() : "";
 }
 
 function safeName(name: string) {
