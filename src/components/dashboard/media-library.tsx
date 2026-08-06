@@ -65,7 +65,7 @@ interface UploadTask {
   etaSeconds?: number | null;
   controller?: AbortController;
   file?: File;
-  targetPath?: string;
+  targetPath?: string | undefined;
 }
 
 function formatBytes(bytes: number) {
@@ -345,13 +345,16 @@ export function MediaLibrary() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            <Usage label="Total files" value={String(all.length)} />
             <Usage label="Used" value={formatBytes(used)} />
-            <Usage label="Files" value={String(all.length)} />
             <Usage
               label="Remaining"
               value={quotaBytes ? formatBytes(Math.max(quotaBytes - used, 0)) : "Quota not set"}
             />
+            {BUCKETS.map((bucket) => (
+              <Usage key={bucket} label={BUCKET_LABEL[bucket]} value={String(countByBucket[bucket])} />
+            ))}
           </div>
           {quotaBytes > 0 && (
             <>
@@ -441,11 +444,40 @@ export function MediaLibrary() {
                 <li key={task.id} className="rounded-xl border border-border p-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm">{task.name}</span>
-                    <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      {task.status === "error" ? "Failed" : `${task.percent}%`}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        {task.status === "error" ? "Failed" : `${task.percent}%`}
+                      </span>
+                      {task.status === "uploading" && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Cancel upload of ${task.name}`}
+                          onClick={() => task.controller?.abort()}
+                        >
+                          <Ban className="size-4" aria-hidden />
+                        </Button>
+                      )}
+                      {task.status === "error" && task.file && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Retry upload of ${task.name}`}
+                          onClick={() => {
+                            const file = task.file!;
+                            setTasks((prev) => prev.filter((entry) => entry.id !== task.id));
+                            void startUploads([file], task.bucket, task.targetPath);
+                          }}
+                        >
+                          <RotateCcw className="size-4" aria-hidden />
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   <Progress className="mt-2 h-1.5" value={task.status === "error" ? 100 : task.percent} />
+                  {task.status === "uploading" && formatEta(task.etaSeconds) && (
+                    <p className="numeric mt-2 text-xs text-muted-foreground">{formatEta(task.etaSeconds)}</p>
+                  )}
                   {task.error && <p className="mt-2 text-xs text-destructive">{task.error}</p>}
                 </li>
               ))}
@@ -461,7 +493,7 @@ export function MediaLibrary() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search media…"
+              placeholder="Search name, bucket, uploader, extension…"
               className="h-9 w-full max-w-xs"
             />
             <Select value={bucketFilter} onValueChange={(value) => setBucketFilter(value as Bucket | "all")}>
@@ -478,8 +510,10 @@ export function MediaLibrary() {
               <SelectContent>
                 <SelectItem value="newest">Newest</SelectItem>
                 <SelectItem value="oldest">Oldest</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="size">Size</SelectItem>
+                <SelectItem value="largest">Largest</SelectItem>
+                <SelectItem value="smallest">Smallest</SelectItem>
+                <SelectItem value="az">A–Z</SelectItem>
+                <SelectItem value="za">Z–A</SelectItem>
               </SelectContent>
             </Select>
             <div className="ml-auto flex items-center gap-1">
@@ -523,7 +557,7 @@ export function MediaLibrary() {
                   onDownload={() => void handleDownload(item)}
                   onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                   onReplace={() => triggerReplace(item)}
-                  onDelete={() => void handleDelete(item)}
+                  onDelete={() => setDeleting(item)}
                 />
               ))}
             </div>
@@ -544,7 +578,7 @@ export function MediaLibrary() {
                     onDownload={() => void handleDownload(item)}
                     onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                     onReplace={() => triggerReplace(item)}
-                    onDelete={() => void handleDelete(item)}
+                    onDelete={() => setDeleting(item)}
                   />
                 </li>
               ))}
@@ -604,6 +638,24 @@ export function MediaLibrary() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete confirmation */}
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">Delete this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{deleting?.name}” will be permanently removed from{" "}
+              {deleting ? BUCKET_LABEL[deleting.bucket as Bucket] : ""}. This cannot be undone and any published link
+              to it will break.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={() => void confirmDelete()}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
