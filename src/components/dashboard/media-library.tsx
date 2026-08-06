@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Copy, Download, FileText, Grid2X2, HardDrive, Image as ImageIcon, List, Music, Pencil,
-  RefreshCw, Trash2, Upload, Video, X,
+  Ban, Copy, Download, FileText, Grid2X2, HardDrive, Image as ImageIcon, List, Music, Pencil,
+  RefreshCw, RotateCcw, Trash2, Upload, Video, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -15,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { services } from "@/services";
 import type { StorageObject } from "@/services";
 import { cn } from "@/lib/utils";
+import { optimizeImage } from "@/lib/image-optimize";
 
 const BUCKETS = ["images", "videos", "music", "documents", "avatars"] as const;
 type Bucket = (typeof BUCKETS)[number];
@@ -48,7 +53,7 @@ const ACCEPT: Record<Bucket, string> = {
 /** Optional soft quota, in GB. Only shown when configured — nothing is invented. */
 const QUOTA_GB = Number(import.meta.env['VITE_SUPABASE_STORAGE_QUOTA_GB'] ?? 0);
 
-type SortKey = "newest" | "oldest" | "name" | "size";
+type SortKey = "newest" | "oldest" | "largest" | "smallest" | "az" | "za";
 
 interface UploadTask {
   id: string;
@@ -57,6 +62,10 @@ interface UploadTask {
   percent: number;
   status: "uploading" | "done" | "error";
   error?: string;
+  etaSeconds?: number | null;
+  controller?: AbortController;
+  file?: File;
+  targetPath?: string | undefined;
 }
 
 function formatBytes(bytes: number) {
@@ -69,6 +78,18 @@ function formatBytes(bytes: number) {
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+}
+
+function formatEta(seconds: number | null | undefined) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return null;
+  if (seconds < 1) return "less than a second left";
+  if (seconds < 60) return `${Math.ceil(seconds)}s left`;
+  return `${Math.floor(seconds / 60)}m ${Math.ceil(seconds % 60)}s left`;
+}
+
+function extensionOf(name: string) {
+  const match = /\.([^./\\]+)$/.exec(name);
+  return match ? match[1]!.toLowerCase() : "";
 }
 
 function safeName(name: string) {
@@ -106,6 +127,7 @@ export function MediaLibrary() {
   const [renaming, setRenaming] = useState<StorageObject | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<StorageObject | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const replaceTarget = useRef<StorageObject | null>(null);
@@ -139,12 +161,18 @@ export function MediaLibrary() {
     const filtered = all.filter(
       (item) =>
         (bucketFilter === "all" || item.bucket === bucketFilter) &&
-        (!term || item.name.toLowerCase().includes(term)),
+        (!term ||
+          item.name.toLowerCase().includes(term) ||
+          item.bucket.toLowerCase().includes(term) ||
+          extensionOf(item.name).includes(term.replace(/^\./, "")) ||
+          (item.owner ?? "").toLowerCase().includes(term)),
     );
     const sorted = [...filtered];
     sorted.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "size") return b.size - a.size;
+      if (sort === "az") return a.name.localeCompare(b.name);
+      if (sort === "za") return b.name.localeCompare(a.name);
+      if (sort === "largest") return b.size - a.size;
+      if (sort === "smallest") return a.size - b.size;
       const at = a.createdAt ? Date.parse(a.createdAt) : 0;
       const bt = b.createdAt ? Date.parse(b.createdAt) : 0;
       return sort === "oldest" ? at - bt : bt - at;
@@ -154,22 +182,44 @@ export function MediaLibrary() {
 
   const used = all.reduce((total, item) => total + item.size, 0);
   const quotaBytes = QUOTA_GB > 0 ? QUOTA_GB * 1024 ** 3 : 0;
+  const countByBucket = useMemo(() => {
+    const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0])) as Record<Bucket, number>;
+    for (const item of all) if (item.bucket in counts) counts[item.bucket as Bucket] += 1;
+    return counts;
+  }, [all]);
 
   const startUploads = useCallback(
     async (files: File[], bucket: Bucket, targetPath?: string) => {
       const storage = services().storage;
       for (const file of files) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const path = targetPath ?? `${Date.now()}-${safeName(file.name) || "file"}`;
-        setTasks((prev) => [...prev, { id, name: file.name, bucket, percent: 0, status: "uploading" }]);
+        const { file: payload, originalSize, optimized } = await optimizeImage(file, {
+          avatar: bucket === "avatars",
+        });
+        const path = targetPath ?? `${Date.now()}-${safeName(payload.name) || "file"}`;
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        setTasks((prev) => [
+          ...prev,
+          { id, name: file.name, bucket, percent: 0, status: "uploading", controller, file, targetPath },
+        ]);
 
-        const result = await storage.uploadWithProgress(bucket, path, file, {
+        const result = await storage.uploadWithProgress(bucket, path, payload, {
           upsert: Boolean(targetPath),
-          onProgress: (percent) =>
-            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent } : task))),
+          signal: controller.signal,
+          onProgress: (percent) => {
+            const elapsed = (Date.now() - startedAt) / 1000;
+            const etaSeconds = percent > 2 && elapsed > 0.5 ? (elapsed / percent) * (100 - percent) : null;
+            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent, etaSeconds } : task)));
+          },
         });
 
         if (result.error) {
+          if (result.error.code === "storage_upload_aborted") {
+            setTasks((prev) => prev.filter((task) => task.id !== id));
+            toast.message(`${file.name} upload cancelled`);
+            continue;
+          }
           setTasks((prev) =>
             prev.map((task) =>
               task.id === id ? { ...task, status: "error", error: result.error!.message } : task,
@@ -178,9 +228,13 @@ export function MediaLibrary() {
           toast.error(`${file.name} failed`, { description: result.error.message });
         } else {
           setTasks((prev) =>
-            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100 } : task)),
+            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100, etaSeconds: null } : task)),
           );
-          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`);
+          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`, {
+            description: optimized
+              ? `Optimised ${formatBytes(originalSize)} → ${formatBytes(payload.size)} (${Math.round((1 - payload.size / originalSize) * 100)}% smaller)`
+              : undefined,
+          });
           setTimeout(() => setTasks((prev) => prev.filter((task) => task.id !== id)), 4000);
         }
       }
@@ -221,8 +275,10 @@ export function MediaLibrary() {
     }
   }
 
-  async function handleDelete(item: StorageObject) {
-    if (!window.confirm(`Delete “${item.name}” permanently from ${BUCKET_LABEL[item.bucket as Bucket]}?`)) return;
+  async function confirmDelete() {
+    const item = deleting;
+    if (!item) return;
+    setDeleting(null);
     setBusy(true);
     const result = await services().storage.remove(item.bucket, item.path);
     setBusy(false);
@@ -289,13 +345,16 @@ export function MediaLibrary() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            <Usage label="Total files" value={String(all.length)} />
             <Usage label="Used" value={formatBytes(used)} />
-            <Usage label="Files" value={String(all.length)} />
             <Usage
               label="Remaining"
               value={quotaBytes ? formatBytes(Math.max(quotaBytes - used, 0)) : "Quota not set"}
             />
+            {BUCKETS.map((bucket) => (
+              <Usage key={bucket} label={BUCKET_LABEL[bucket]} value={String(countByBucket[bucket])} />
+            ))}
           </div>
           {quotaBytes > 0 && (
             <>
@@ -385,11 +444,40 @@ export function MediaLibrary() {
                 <li key={task.id} className="rounded-xl border border-border p-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm">{task.name}</span>
-                    <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      {task.status === "error" ? "Failed" : `${task.percent}%`}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="numeric text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        {task.status === "error" ? "Failed" : `${task.percent}%`}
+                      </span>
+                      {task.status === "uploading" && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Cancel upload of ${task.name}`}
+                          onClick={() => task.controller?.abort()}
+                        >
+                          <Ban className="size-4" aria-hidden />
+                        </Button>
+                      )}
+                      {task.status === "error" && task.file && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Retry upload of ${task.name}`}
+                          onClick={() => {
+                            const file = task.file!;
+                            setTasks((prev) => prev.filter((entry) => entry.id !== task.id));
+                            void startUploads([file], task.bucket, task.targetPath);
+                          }}
+                        >
+                          <RotateCcw className="size-4" aria-hidden />
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   <Progress className="mt-2 h-1.5" value={task.status === "error" ? 100 : task.percent} />
+                  {task.status === "uploading" && formatEta(task.etaSeconds) && (
+                    <p className="numeric mt-2 text-xs text-muted-foreground">{formatEta(task.etaSeconds)}</p>
+                  )}
                   {task.error && <p className="mt-2 text-xs text-destructive">{task.error}</p>}
                 </li>
               ))}
@@ -405,7 +493,7 @@ export function MediaLibrary() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search media…"
+              placeholder="Search name, bucket, uploader, extension…"
               className="h-9 w-full max-w-xs"
             />
             <Select value={bucketFilter} onValueChange={(value) => setBucketFilter(value as Bucket | "all")}>
@@ -422,8 +510,10 @@ export function MediaLibrary() {
               <SelectContent>
                 <SelectItem value="newest">Newest</SelectItem>
                 <SelectItem value="oldest">Oldest</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="size">Size</SelectItem>
+                <SelectItem value="largest">Largest</SelectItem>
+                <SelectItem value="smallest">Smallest</SelectItem>
+                <SelectItem value="az">A–Z</SelectItem>
+                <SelectItem value="za">Z–A</SelectItem>
               </SelectContent>
             </Select>
             <div className="ml-auto flex items-center gap-1">
@@ -467,7 +557,7 @@ export function MediaLibrary() {
                   onDownload={() => void handleDownload(item)}
                   onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                   onReplace={() => triggerReplace(item)}
-                  onDelete={() => void handleDelete(item)}
+                  onDelete={() => setDeleting(item)}
                 />
               ))}
             </div>
@@ -488,7 +578,7 @@ export function MediaLibrary() {
                     onDownload={() => void handleDownload(item)}
                     onRename={() => { setRenaming(item); setRenameValue(item.name); }}
                     onReplace={() => triggerReplace(item)}
-                    onDelete={() => void handleDelete(item)}
+                    onDelete={() => setDeleting(item)}
                   />
                 </li>
               ))}
@@ -548,6 +638,24 @@ export function MediaLibrary() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete confirmation */}
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">Delete this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{deleting?.name}” will be permanently removed from{" "}
+              {deleting ? BUCKET_LABEL[deleting.bucket as Bucket] : ""}. This cannot be undone and any published link
+              to it will break.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={() => void confirmDelete()}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
