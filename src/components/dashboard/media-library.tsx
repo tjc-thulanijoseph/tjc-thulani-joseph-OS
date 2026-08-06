@@ -127,6 +127,7 @@ export function MediaLibrary() {
   const [renaming, setRenaming] = useState<StorageObject | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<StorageObject | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const replaceTarget = useRef<StorageObject | null>(null);
@@ -160,12 +161,18 @@ export function MediaLibrary() {
     const filtered = all.filter(
       (item) =>
         (bucketFilter === "all" || item.bucket === bucketFilter) &&
-        (!term || item.name.toLowerCase().includes(term)),
+        (!term ||
+          item.name.toLowerCase().includes(term) ||
+          item.bucket.toLowerCase().includes(term) ||
+          extensionOf(item.name).includes(term.replace(/^\./, "")) ||
+          (item.owner ?? "").toLowerCase().includes(term)),
     );
     const sorted = [...filtered];
     sorted.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "size") return b.size - a.size;
+      if (sort === "az") return a.name.localeCompare(b.name);
+      if (sort === "za") return b.name.localeCompare(a.name);
+      if (sort === "largest") return b.size - a.size;
+      if (sort === "smallest") return a.size - b.size;
       const at = a.createdAt ? Date.parse(a.createdAt) : 0;
       const bt = b.createdAt ? Date.parse(b.createdAt) : 0;
       return sort === "oldest" ? at - bt : bt - at;
@@ -175,22 +182,44 @@ export function MediaLibrary() {
 
   const used = all.reduce((total, item) => total + item.size, 0);
   const quotaBytes = QUOTA_GB > 0 ? QUOTA_GB * 1024 ** 3 : 0;
+  const countByBucket = useMemo(() => {
+    const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0])) as Record<Bucket, number>;
+    for (const item of all) if (item.bucket in counts) counts[item.bucket as Bucket] += 1;
+    return counts;
+  }, [all]);
 
   const startUploads = useCallback(
     async (files: File[], bucket: Bucket, targetPath?: string) => {
       const storage = services().storage;
       for (const file of files) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const path = targetPath ?? `${Date.now()}-${safeName(file.name) || "file"}`;
-        setTasks((prev) => [...prev, { id, name: file.name, bucket, percent: 0, status: "uploading" }]);
+        const { file: payload, originalSize, optimized } = await optimizeImage(file, {
+          avatar: bucket === "avatars",
+        });
+        const path = targetPath ?? `${Date.now()}-${safeName(payload.name) || "file"}`;
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        setTasks((prev) => [
+          ...prev,
+          { id, name: file.name, bucket, percent: 0, status: "uploading", controller, file, targetPath },
+        ]);
 
-        const result = await storage.uploadWithProgress(bucket, path, file, {
+        const result = await storage.uploadWithProgress(bucket, path, payload, {
           upsert: Boolean(targetPath),
-          onProgress: (percent) =>
-            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent } : task))),
+          signal: controller.signal,
+          onProgress: (percent) => {
+            const elapsed = (Date.now() - startedAt) / 1000;
+            const etaSeconds = percent > 2 && elapsed > 0.5 ? (elapsed / percent) * (100 - percent) : null;
+            setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, percent, etaSeconds } : task)));
+          },
         });
 
         if (result.error) {
+          if (result.error.code === "storage_upload_aborted") {
+            setTasks((prev) => prev.filter((task) => task.id !== id));
+            toast.message(`${file.name} upload cancelled`);
+            continue;
+          }
           setTasks((prev) =>
             prev.map((task) =>
               task.id === id ? { ...task, status: "error", error: result.error!.message } : task,
@@ -199,9 +228,13 @@ export function MediaLibrary() {
           toast.error(`${file.name} failed`, { description: result.error.message });
         } else {
           setTasks((prev) =>
-            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100 } : task)),
+            prev.map((task) => (task.id === id ? { ...task, status: "done", percent: 100, etaSeconds: null } : task)),
           );
-          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`);
+          toast.success(`${file.name} uploaded to ${BUCKET_LABEL[bucket]}`, {
+            description: optimized
+              ? `Optimised ${formatBytes(originalSize)} → ${formatBytes(payload.size)} (${Math.round((1 - payload.size / originalSize) * 100)}% smaller)`
+              : undefined,
+          });
           setTimeout(() => setTasks((prev) => prev.filter((task) => task.id !== id)), 4000);
         }
       }
@@ -242,8 +275,10 @@ export function MediaLibrary() {
     }
   }
 
-  async function handleDelete(item: StorageObject) {
-    if (!window.confirm(`Delete “${item.name}” permanently from ${BUCKET_LABEL[item.bucket as Bucket]}?`)) return;
+  async function confirmDelete() {
+    const item = deleting;
+    if (!item) return;
+    setDeleting(null);
     setBusy(true);
     const result = await services().storage.remove(item.bucket, item.path);
     setBusy(false);
