@@ -49,3 +49,29 @@ export interface ServiceError {
   code: string;
   message: string;
 }
+
+/** A row of the audit trail. */
+export interface ActivityEntry {
+  id: UUID;
+  actor_id: UUID | null;
+  action: string;
+  resource: string | null;
+  resource_id: UUID | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Content record shared by every CMS table (the generic TJC OS envelope). */
+export interface ContentRecord extends BaseRecord {
+  title: string | null;
+  slug: string | null;
+  description: string | null;
+  body: string | null;
+  url: string | null;
+  thumbnail_url: string | null;
+  category: string | null;
+  tags: string[] | null;
+  metadata: Record<string, unknown>;
+  position: number | null;
+  published_at: string | null;
+}
